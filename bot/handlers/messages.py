@@ -325,7 +325,7 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Get channel for this chat
     try:
-        channel_id = db.get_chat_channel(chat.id)
+        channel_id = await db.get_chat_channel_async(chat.id)
         logger.info(f"Channel ID for chat {chat.id}: {channel_id}")
         if not channel_id:
             logger.warning(f"No channel configured for chat {chat.id}")
@@ -336,7 +336,7 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Check if message deletion is enabled for this chat
     try:
-        delete_enabled = db.get_delete_messages_setting(chat.id)
+        delete_enabled = await db.get_delete_messages_setting_async(chat.id)
         logger.info(f"Delete messages setting for chat {chat.id}: {delete_enabled}")
     except Exception as e:
         logger.error(f"Error getting delete setting for chat {chat.id}: {e}")
@@ -344,7 +344,7 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Check maximum edit time setting for this chat
     try:
-        max_edit_time = db.get_max_edit_time_setting(chat.id)
+        max_edit_time = await db.get_max_edit_time_setting_async(chat.id)
         logger.info(f"Max edit time setting for chat {chat.id}: {max_edit_time} minutes")
     except Exception as e:
         logger.error(f"Error getting max edit time setting for chat {chat.id}: {e}")

@@ -3,9 +3,7 @@ Logging configuration for the Telegram bot
 """
 
 import logging
-import logging.handlers
 import os
-from datetime import datetime
 from bot.utils.config import Config
 
 
@@ -22,16 +20,8 @@ def setup_logging() -> None:
         level=getattr(logging, Config.LOG_LEVEL.upper()),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            # Console handler
-            logging.StreamHandler(),
-            # File handler with time-based rotation (30 days = ~1 month)
-            logging.handlers.TimedRotatingFileHandler(
-                filename=os.path.join(log_dir, Config.LOG_FILE),
-                when='D',  # Rotate daily
-                interval=30,  # Every 30 days
-                backupCount=1,  # Keep only 1 backup file (older logs are deleted)
-                encoding='utf-8'
-            )
+            # Console handler only
+            logging.StreamHandler()
         ]
     )
     

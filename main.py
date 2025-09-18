@@ -193,7 +193,11 @@ class TelegramBot:
         """Start the bot with webhook"""
         try:
             logger.info("Starting bot with webhook...")
-            
+
+            # Initialize database async pool
+            from bot.database.database import db
+            await db.create_async_pool()
+
             # Initialize application
             await self.application.initialize()
             await self.application.start()
@@ -208,12 +212,23 @@ class TelegramBot:
             logger.info(f"Webhook set to: {webhook_url}")
             logger.info("Bot started successfully")
             
-            # Start FastAPI server
+            # Start FastAPI server with concurrency support
             config = uvicorn.Config(
                 app=self.app,
                 host=Config.WEBHOOK_HOST,
                 port=Config.WEBHOOK_PORT,
-                log_level="info"
+                log_level="info",
+                workers=1,  # Single worker for webhook mode (Telegram requirement)
+                loop="asyncio",
+                # Enable concurrent request handling
+                access_log=True,
+                # Increase timeout for database operations
+                timeout_keep_alive=30,
+                # Configure for better concurrency
+                backlog=2048,  # Maximum number of pending connections
+                # Use multiple threads for I/O operations
+                limit_concurrency=100,  # Maximum concurrent connections
+                limit_max_requests=10000  # Restart worker after this many requests
             )
             server = uvicorn.Server(config)
             await server.serve()
@@ -225,14 +240,24 @@ class TelegramBot:
     async def stop(self):
         """Stop the bot gracefully"""
         logger.info("Stopping bot...")
-        
+
+        # Close database connections
+        try:
+            from bot.database.database import db
+            if db.pool:
+                db.pool.close()
+                await db.pool.wait_closed()
+                logger.info("Database connections closed")
+        except Exception as e:
+            logger.error(f"Error closing database connections: {e}")
+
         # Delete webhook
         try:
             await self.application.bot.delete_webhook()
             logger.info("Webhook deleted")
         except Exception as e:
             logger.error(f"Error deleting webhook: {e}")
-        
+
         # Stop application
         await self.application.stop()
         await self.application.shutdown()

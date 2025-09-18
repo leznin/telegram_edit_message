@@ -8,9 +8,11 @@ Handles all database operations including:
 
 import mysql.connector
 from mysql.connector import Error
+import aiomysql
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
+import asyncio
 from bot.utils.config import get_database_config
 
 logger = logging.getLogger(__name__)
@@ -18,9 +20,10 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     """Database manager class for handling all database operations"""
-    
+
     def __init__(self):
-        self.connection = None
+        self.connection = None  # For synchronous operations (migrations, etc.)
+        self.pool = None  # For asynchronous operations
         self.connect()
         self.create_tables()
     
@@ -34,6 +37,30 @@ class DatabaseManager:
             logger.error(f"Error connecting to database: {e}")
             raise
     
+    async def create_async_pool(self):
+        """Create asynchronous connection pool"""
+        try:
+            config = get_database_config()
+            # Prepare config for aiomysql (different parameter names)
+            async_config = {
+                'host': config['host'],
+                'port': config['port'],
+                'user': config['user'],
+                'password': config['password'],
+                'db': config['database'],  # aiomysql uses 'db' instead of 'database'
+                'minsize': 5,  # Minimum connections in pool
+                'maxsize': 20,  # Maximum connections in pool
+                'charset': 'utf8mb4',
+                'autocommit': True,
+                'use_unicode': True
+            }
+
+            self.pool = await aiomysql.create_pool(**async_config)
+            logger.info("Asynchronous database connection pool created")
+        except Exception as e:
+            logger.error(f"Error creating async database pool: {e}")
+            raise
+
     def create_tables(self) -> None:
         """Create all necessary tables"""
         try:
@@ -196,7 +223,29 @@ class DatabaseManager:
             return None
         finally:
             cursor.close()
-    
+
+    async def get_chat_channel_async(self, chat_id: int) -> Optional[int]:
+        """Get channel ID for a chat (asynchronous version)"""
+        if not self.pool:
+            logger.error("Async pool not initialized")
+            return None
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    query = """
+                        SELECT channel_id
+                        FROM chat_channel_bindings
+                        WHERE chat_id = %s AND is_active = TRUE
+                        LIMIT 1
+                    """
+                    await cursor.execute(query, (chat_id,))
+                    result = await cursor.fetchone()
+                    return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting chat channel: {e}")
+            return None
+
     def is_chat_admin(self, chat_id: int, user_id: int) -> bool:
         """Check if user is admin of the chat in bot's database"""
         try:
@@ -305,6 +354,28 @@ class DatabaseManager:
         finally:
             cursor.close()
 
+    async def get_delete_messages_setting_async(self, chat_id: int) -> bool:
+        """Get the delete messages setting for a chat (asynchronous version)"""
+        if not self.pool:
+            logger.error("Async pool not initialized")
+            return True  # Default to enabled
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    query = """
+                        SELECT delete_messages_enabled
+                        FROM bot_chats
+                        WHERE chat_id = %s AND is_active = TRUE
+                    """
+                    await cursor.execute(query, (chat_id,))
+                    result = await cursor.fetchone()
+                    # Default to True if not found
+                    return result[0] if result else True
+        except Exception as e:
+            logger.error(f"Error getting delete messages setting for chat {chat_id}: {e}")
+            return True  # Default to enabled
+
     def set_delete_messages_setting(self, chat_id: int, enabled: bool) -> bool:
         """Set the delete messages setting for a chat"""
         try:
@@ -344,6 +415,28 @@ class DatabaseManager:
             return 20  # Default to 20 minutes
         finally:
             cursor.close()
+
+    async def get_max_edit_time_setting_async(self, chat_id: int) -> int:
+        """Get the maximum edit time setting for a chat in minutes (asynchronous version)"""
+        if not self.pool:
+            logger.error("Async pool not initialized")
+            return 20  # Default to 20 minutes
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    query = """
+                        SELECT max_edit_time_minutes
+                        FROM bot_chats
+                        WHERE chat_id = %s AND is_active = TRUE
+                    """
+                    await cursor.execute(query, (chat_id,))
+                    result = await cursor.fetchone()
+                    # Default to 20 minutes if not found
+                    return result[0] if result else 20
+        except Exception as e:
+            logger.error(f"Error getting max edit time setting for chat {chat_id}: {e}")
+            return 20  # Default to 20 minutes
 
     def set_max_edit_time_setting(self, chat_id: int, minutes: int) -> bool:
         """Set the maximum edit time setting for a chat in minutes"""
