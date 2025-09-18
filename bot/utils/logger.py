@@ -24,11 +24,12 @@ def setup_logging() -> None:
         handlers=[
             # Console handler
             logging.StreamHandler(),
-            # File handler with rotation
-            logging.handlers.RotatingFileHandler(
+            # File handler with time-based rotation (30 days = ~1 month)
+            logging.handlers.TimedRotatingFileHandler(
                 filename=os.path.join(log_dir, Config.LOG_FILE),
-                maxBytes=10 * 1024 * 1024,  # 10MB
-                backupCount=5,
+                when='D',  # Rotate daily
+                interval=30,  # Every 30 days
+                backupCount=1,  # Keep only 1 backup file (older logs are deleted)
                 encoding='utf-8'
             )
         ]
