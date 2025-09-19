@@ -161,6 +161,8 @@ async def setup_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_channel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle channel setup from forwarded message"""
+    from telegram.ext import ApplicationHandlerStop
+
     user = update.effective_user
     message = update.message
 
@@ -169,11 +171,11 @@ async def handle_channel_setup(update: Update, context: ContextTypes.DEFAULT_TYP
     # Check if user is in channel setup mode
     if not context.user_data.get('waiting_for_channel'):
         logger.info(f"User {user.id} not in channel setup mode")
-        return
+        raise ApplicationHandlerStop()
 
     # Don't interfere with moderator forward mode
     if context.user_data.get('waiting_for_moderator_forward'):
-        return
+        raise ApplicationHandlerStop()
 
     # Check if message is forwarded from a channel
     # Support both old and new forward formats
@@ -909,6 +911,8 @@ async def add_moderator_forward_callback(update: Update, context: ContextTypes.D
 
 async def handle_moderator_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle forwarded message for moderator addition"""
+    from telegram.ext import ApplicationHandlerStop
+
     user = update.effective_user
     message = update.message
 
@@ -917,11 +921,11 @@ async def handle_moderator_forward(update: Update, context: ContextTypes.DEFAULT
     # Check if user is waiting for moderator forward
     if not context.user_data.get('waiting_for_moderator_forward'):
         logger.info(f"User {user.id} not waiting for moderator forward")
-        return
+        raise ApplicationHandlerStop()
 
     # Don't interfere with channel setup mode
     if context.user_data.get('waiting_for_channel'):
-        return
+        raise ApplicationHandlerStop()
 
     chat_id = context.user_data['waiting_for_moderator_forward']
 

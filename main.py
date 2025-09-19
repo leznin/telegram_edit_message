@@ -133,20 +133,20 @@ class TelegramBot:
             CallbackQueryHandler(moderator_info_callback, pattern="^moderator_info$")
         )
 
-        # Message handler for channel setup (private chats, forwarded messages)
-        # IMPORTANT: This must be registered BEFORE moderator forward handler
-        self.application.add_handler(
-            MessageHandler(
-                filters.ChatType.PRIVATE & forwarded_messages,
-                handle_channel_setup
-            )
-        )
-
         # Message handler for moderator forward (private chats, forwarded messages for moderator addition)
+        # IMPORTANT: This must be registered BEFORE other forwarded message handlers
         self.application.add_handler(
             MessageHandler(
                 filters.ChatType.PRIVATE & forwarded_messages,
                 handle_moderator_forward
+            )
+        )
+
+        # Message handler for channel setup (private chats, forwarded messages)
+        self.application.add_handler(
+            MessageHandler(
+                filters.ChatType.PRIVATE & forwarded_messages,
+                handle_channel_setup
             )
         )
 
