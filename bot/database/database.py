@@ -126,6 +126,58 @@ class DatabaseManager:
                 else:
                     logger.warning(f"Migration warning for max_edit_time_minutes: {e}")
 
+            # Table for chat moderators
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_moderators (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    moderator_user_id BIGINT NOT NULL,
+                    moderator_username VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+                    moderator_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+                    added_by_user_id BIGINT NOT NULL,
+                    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    UNIQUE KEY unique_chat_moderator (chat_id, moderator_user_id),
+                    INDEX idx_chat_id (chat_id),
+                    INDEX idx_moderator_user_id (moderator_user_id),
+                    INDEX idx_added_by_user_id (added_by_user_id),
+                    FOREIGN KEY (chat_id) REFERENCES bot_chats(chat_id) ON DELETE CASCADE
+                ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """)
+
+            # Add moderator_username and moderator_name columns if they don't exist (migration)
+            try:
+                cursor.execute("""
+                    ALTER TABLE chat_moderators
+                    ADD COLUMN moderator_username VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """)
+                self.connection.commit()
+                logger.info("Migration: added moderator_username column")
+            except Error as e:
+                if "Duplicate column name" in str(e):
+                    logger.info("Migration: moderator_username column already exists")
+                else:
+                    logger.warning(f"Migration warning for moderator_username: {e}")
+
+            try:
+                cursor.execute("""
+                    ALTER TABLE chat_moderators
+                    ADD COLUMN moderator_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """)
+                self.connection.commit()
+                logger.info("Migration: added moderator_name column")
+            except Error as e:
+                if "Duplicate column name" in str(e):
+                    logger.info("Migration: moderator_name column already exists")
+                else:
+                    logger.warning(f"Migration warning for moderator_name: {e}")
+
+            # Run migration for existing moderators
+            try:
+                self.migrate_moderator_info()
+            except Exception as e:
+                logger.warning(f"Migration warning for moderator info: {e}")
+
             self.connection.commit()
             logger.info("Database tables created successfully")
             
@@ -203,7 +255,30 @@ class DatabaseManager:
             return False
         finally:
             cursor.close()
-    
+
+    async def bind_chat_channel_async(self, chat_id: int, channel_id: int, admin_user_id: int) -> bool:
+        """Bind a chat to a channel (asynchronous version)"""
+        if not self.pool:
+            logger.error("Async pool not initialized")
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    query = """
+                        INSERT INTO chat_channel_bindings (chat_id, channel_id, admin_user_id)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                        is_active = TRUE,
+                        created_date = CURRENT_TIMESTAMP
+                    """
+                    await cursor.execute(query, (chat_id, channel_id, admin_user_id))
+                    logger.info(f"Chat {chat_id} bound to channel {channel_id}")
+                    return True
+        except Exception as e:
+            logger.error(f"Error binding chat to channel: {e}")
+            return False
+
     def get_chat_channel(self, chat_id: int) -> Optional[int]:
         """Get bound channel for a chat"""
         try:
@@ -460,6 +535,201 @@ class DatabaseManager:
 
         except Error as e:
             logger.error(f"Error setting max edit time setting for chat {chat_id}: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    def add_moderator(self, chat_id: int, moderator_user_id: int, added_by_user_id: int,
+                     moderator_username: Optional[str] = None, moderator_name: Optional[str] = None) -> bool:
+        """Add a moderator to a chat"""
+        try:
+            cursor = self.connection.cursor()
+            query = """
+                INSERT INTO chat_moderators (chat_id, moderator_user_id, moderator_username, moderator_name, added_by_user_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                is_active = TRUE,
+                added_by_user_id = VALUES(added_by_user_id),
+                moderator_username = VALUES(moderator_username),
+                moderator_name = VALUES(moderator_name),
+                added_date = CURRENT_TIMESTAMP
+            """
+            cursor.execute(query, (chat_id, moderator_user_id, moderator_username, moderator_name, added_by_user_id))
+            self.connection.commit()
+            logger.info(f"Moderator {moderator_user_id} ({moderator_name}, @{moderator_username}) added to chat {chat_id} by {added_by_user_id}")
+            return True
+
+        except Error as e:
+            logger.error(f"Error adding moderator: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    def remove_moderator(self, chat_id: int, moderator_user_id: int) -> bool:
+        """Remove a moderator from a chat"""
+        try:
+            cursor = self.connection.cursor()
+            query = """
+                UPDATE chat_moderators
+                SET is_active = FALSE
+                WHERE chat_id = %s AND moderator_user_id = %s
+            """
+            cursor.execute(query, (chat_id, moderator_user_id))
+            self.connection.commit()
+            logger.info(f"Moderator {moderator_user_id} removed from chat {chat_id}")
+            return True
+
+        except Error as e:
+            logger.error(f"Error removing moderator: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    def is_moderator(self, chat_id: int, user_id: int) -> bool:
+        """Check if user is a moderator in the chat"""
+        try:
+            cursor = self.connection.cursor()
+            query = """
+                SELECT 1 FROM chat_moderators
+                WHERE chat_id = %s AND moderator_user_id = %s AND is_active = TRUE
+            """
+            cursor.execute(query, (chat_id, user_id))
+            result = cursor.fetchone()
+            return result is not None
+
+        except Error as e:
+            logger.error(f"Error checking moderator status: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    async def is_moderator_async(self, chat_id: int, user_id: int) -> bool:
+        """Check if user is a moderator in the chat (asynchronous version)"""
+        if not self.pool:
+            logger.error("Async pool not initialized")
+            return False
+
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    query = """
+                        SELECT 1 FROM chat_moderators
+                        WHERE chat_id = %s AND moderator_user_id = %s AND is_active = TRUE
+                    """
+                    await cursor.execute(query, (chat_id, user_id))
+                    result = await cursor.fetchone()
+                    return result is not None
+        except Exception as e:
+            logger.error(f"Error checking moderator status: {e}")
+            return False
+
+    def get_chat_moderators(self, chat_id: int) -> List[Dict[str, Any]]:
+        """Get all moderators for a chat"""
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            query = """
+                SELECT moderator_user_id, moderator_username, moderator_name, added_by_user_id, added_date
+                FROM chat_moderators
+                WHERE chat_id = %s AND is_active = TRUE
+                ORDER BY added_date DESC
+            """
+            cursor.execute(query, (chat_id,))
+            moderators = cursor.fetchall()
+            return moderators
+
+        except Error as e:
+            logger.error(f"Error getting chat moderators: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def get_user_moderated_chats(self, user_id: int) -> List[Dict[str, Any]]:
+        """Get all chats where user is a moderator"""
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            query = """
+                SELECT cm.chat_id, bc.chat_title, cm.moderator_username, cm.moderator_name, cm.added_date
+                FROM chat_moderators cm
+                JOIN bot_chats bc ON cm.chat_id = bc.chat_id
+                WHERE cm.moderator_user_id = %s AND cm.is_active = TRUE AND bc.is_active = TRUE
+                ORDER BY cm.added_date DESC
+            """
+            cursor.execute(query, (user_id,))
+            chats = cursor.fetchall()
+            return chats
+
+        except Error as e:
+            logger.error(f"Error getting user moderated chats: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def migrate_moderator_info(self) -> bool:
+        """Migrate existing moderators to include username and name fields"""
+        try:
+            cursor = self.connection.cursor()
+
+            # Update existing moderators that have NULL values for username and name
+            # Set default values - these can be updated later when more info is available
+            update_query = """
+                UPDATE chat_moderators
+                SET moderator_username = NULL,
+                    moderator_name = CONCAT('Пользователь ', moderator_user_id)
+                WHERE moderator_username IS NULL OR moderator_name IS NULL
+            """
+            cursor.execute(update_query)
+            updated_count = cursor.rowcount
+
+            self.connection.commit()
+            logger.info(f"Migration completed: updated {updated_count} moderator records")
+            return True
+
+        except Error as e:
+            logger.error(f"Error migrating moderator info: {e}")
+            return False
+        finally:
+            cursor.close()
+
+    def update_moderator_info(self, chat_id: int, moderator_user_id: int,
+                             username: Optional[str] = None, name: Optional[str] = None) -> bool:
+        """Update username and name for an existing moderator"""
+        try:
+            cursor = self.connection.cursor()
+
+            # Build update query based on what fields are provided
+            update_fields = []
+            values = []
+
+            if username is not None:
+                update_fields.append("moderator_username = %s")
+                values.append(username)
+
+            if name is not None:
+                update_fields.append("moderator_name = %s")
+                values.append(name)
+
+            if not update_fields:
+                logger.warning("No fields to update for moderator info")
+                return False
+
+            # Add WHERE conditions
+            values.extend([chat_id, moderator_user_id])
+
+            query = f"""
+                UPDATE chat_moderators
+                SET {', '.join(update_fields)}
+                WHERE chat_id = %s AND moderator_user_id = %s AND is_active = TRUE
+            """
+
+            cursor.execute(query, values)
+            self.connection.commit()
+
+            affected_rows = cursor.rowcount
+            logger.info(f"Updated moderator info for user {moderator_user_id} in chat {chat_id}: {affected_rows} rows affected")
+            return affected_rows > 0
+
+        except Error as e:
+            logger.error(f"Error updating moderator info: {e}")
             return False
         finally:
             cursor.close()

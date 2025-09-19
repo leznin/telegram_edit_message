@@ -28,7 +28,17 @@ from bot.handlers.commands import (
     set_edit_time_callback,
     set_time_callback,
     custom_time_callback,
-    handle_custom_time_input
+    handle_custom_time_input,
+    help_callback,
+    manage_moderators_callback,
+    add_moderator_options_callback,
+    add_moderator_manual_callback,
+    add_moderator_forward_callback,
+    remove_moderator_callback,
+    confirm_remove_moderator_callback,
+    handle_moderator_id_input,
+    handle_moderator_forward,
+    moderator_info_callback
 )
 from bot.handlers.messages import handle_edited_message, handle_new_chat_members
 from bot.handlers.status import handle_my_chat_member
@@ -61,6 +71,9 @@ class TelegramBot:
     def _register_handlers(self):
         """Register all bot handlers"""
         from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters
+
+        # Use built-in FORWARDED filter - it should support both old and new formats
+        forwarded_messages = filters.FORWARDED
         
         # Command handlers (private chats only)
         self.application.add_handler(
@@ -87,6 +100,9 @@ class TelegramBot:
             CallbackQueryHandler(main_menu_callback, pattern="^main_menu$")
         )
         self.application.add_handler(
+            CallbackQueryHandler(help_callback, pattern="^help$")
+        )
+        self.application.add_handler(
             CallbackQueryHandler(set_edit_time_callback, pattern="^set_edit_time_")
         )
         self.application.add_handler(
@@ -95,20 +111,58 @@ class TelegramBot:
         self.application.add_handler(
             CallbackQueryHandler(custom_time_callback, pattern="^custom_time_")
         )
-        
+        self.application.add_handler(
+            CallbackQueryHandler(manage_moderators_callback, pattern="^manage_moderators_")
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(add_moderator_options_callback, pattern="^add_moderator_options_")
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(add_moderator_manual_callback, pattern="^add_moderator_manual_")
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(add_moderator_forward_callback, pattern="^add_moderator_forward_")
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(remove_moderator_callback, pattern="^remove_moderator_")
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(confirm_remove_moderator_callback, pattern="^confirm_remove_moderator_")
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(moderator_info_callback, pattern="^moderator_info$")
+        )
+
         # Message handler for channel setup (private chats, forwarded messages)
+        # IMPORTANT: This must be registered BEFORE moderator forward handler
         self.application.add_handler(
             MessageHandler(
-                filters.ChatType.PRIVATE & filters.FORWARDED,
+                filters.ChatType.PRIVATE & forwarded_messages,
                 handle_channel_setup
+            )
+        )
+
+        # Message handler for moderator forward (private chats, forwarded messages for moderator addition)
+        self.application.add_handler(
+            MessageHandler(
+                filters.ChatType.PRIVATE & forwarded_messages,
+                handle_moderator_forward
             )
         )
 
         # Message handler for custom time input (private chats, text messages)
         self.application.add_handler(
             MessageHandler(
-                filters.ChatType.PRIVATE & filters.TEXT & (~filters.FORWARDED),
+                filters.ChatType.PRIVATE & filters.TEXT & (~forwarded_messages),
                 handle_custom_time_input
+            )
+        )
+
+        # Message handler for moderator ID input (private chats, text messages)
+        self.application.add_handler(
+            MessageHandler(
+                filters.ChatType.PRIVATE & filters.TEXT & (~forwarded_messages),
+                handle_moderator_id_input
             )
         )
         
@@ -173,7 +227,10 @@ class TelegramBot:
                 if update.edited_message:
                     logger.info(f"Received edited_message update for chat {update.edited_message.chat.id}")
                 elif update.message:
-                    logger.debug(f"Received message update for chat {update.message.chat.id}")
+                    logger.info(f"Received message update for chat {update.message.chat.id}")
+                    # Log forwarded message details
+                    if hasattr(update.message, 'forward_origin') or hasattr(update.message, 'forward_from_chat'):
+                        logger.info(f"Forwarded message detected: forward_origin={hasattr(update.message, 'forward_origin')}, forward_from_chat={hasattr(update.message, 'forward_from_chat')}")
                 
                 # Process update
                 await self.application.process_update(update)

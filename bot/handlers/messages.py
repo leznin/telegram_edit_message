@@ -308,10 +308,18 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(f"Ignoring edited message from bot {user.id}")
         return
     
-    # Убираем проверку на админов - обрабатываем сообщения от всех пользователей
-    # Если нужно игнорировать админов, раскомментируйте блок ниже:
-    """
-    # Check if user is admin in the chat
+    # Check if user is a moderator in the chat - moderators can edit without restrictions
+    try:
+        is_moderator = await db.is_moderator_async(chat.id, user.id)
+        logger.info(f"User {user.id} moderator status: {is_moderator}")
+        if is_moderator:
+            logger.info(f"Ignoring edited message from moderator {user.id} in chat {chat.id}")
+            return
+    except Exception as e:
+        logger.error(f"Error checking moderator status: {e}")
+        # Continue processing if we can't check moderator status
+
+    # Check if user is admin in the chat - admins should also be able to edit without restrictions
     try:
         is_admin = await is_user_admin(chat.id, user.id, context)
         logger.info(f"User {user.id} admin status: {is_admin}")
@@ -320,8 +328,9 @@ async def handle_edited_message(update: Update, context: ContextTypes.DEFAULT_TY
             return
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
-        # Продолжаем обработку, если не можем проверить статус админа
-    """
+        # Continue processing if we can't check admin status
+
+    # Admins are now checked above and their edits are ignored
     
     # Get channel for this chat
     try:
