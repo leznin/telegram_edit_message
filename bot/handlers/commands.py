@@ -159,31 +159,48 @@ async def setup_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"User {user.id} opened settings for chat {chat_id}")
 
 
-async def handle_channel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle channel setup from forwarded message"""
-    from telegram.ext import ApplicationHandlerStop
-
+async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Unified handler for all forwarded messages in private chats"""
     user = update.effective_user
     message = update.message
 
-    logger.info(f"handle_channel_setup called for user {user.id}")
+    logger.info(f"handle_forwarded_message called for user {user.id}")
 
-    # Check if user is in channel setup mode
-    if not context.user_data.get('waiting_for_channel'):
-        logger.info(f"User {user.id} not in channel setup mode")
-        raise ApplicationHandlerStop()
+    # Check user context to determine what to do with the forwarded message
+    if context.user_data.get('waiting_for_channel'):
+        # User is setting up a channel
+        await _handle_channel_setup_internal(update, context)
+    elif context.user_data.get('waiting_for_moderator_forward'):
+        # User is adding a moderator
+        await _handle_moderator_forward_internal(update, context)
+    else:
+        # User is not expecting any forwarded message
+        logger.info(f"User {user.id} sent unexpected forwarded message")
+        await message.reply_text(
+            "❌ Я не ожидаю пересланное сообщение в данный момент.\n\n"
+            "Используйте /chats чтобы настроить чаты или модераторов."
+        )
 
-    # Don't interfere with moderator forward mode
-    if context.user_data.get('waiting_for_moderator_forward'):
-        raise ApplicationHandlerStop()
+async def _handle_channel_setup_internal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Internal function to handle channel setup from forwarded message"""
+    user = update.effective_user
+    message = update.message
+
+    logger.info(f"Processing channel setup for user {user.id}")
 
     # Check if message is forwarded from a channel
     # Support both old and new forward formats
     forward_chat = None
-    if hasattr(message, 'forward_origin') and message.forward_origin:
-        # New format (forward_origin)
-        if hasattr(message.forward_origin, 'chat') and message.forward_origin.chat:
-            forward_chat = message.forward_origin.chat
+
+    # Check new format (forward_origin) from api_kwargs
+    if hasattr(message, 'api_kwargs') and 'forward_origin' in message.api_kwargs:
+        forward_origin = message.api_kwargs['forward_origin']
+        if isinstance(forward_origin, dict) and forward_origin.get('type') == 'channel':
+            chat_data = forward_origin.get('chat')
+            if chat_data:
+                # Create Chat object from dict
+                from telegram import Chat
+                forward_chat = Chat.de_json(chat_data, context.bot)
     elif hasattr(message, 'forward_from_chat'):
         # Old format (forward_from_chat)
         forward_chat = message.forward_from_chat
@@ -193,11 +210,11 @@ async def handle_channel_setup(update: Update, context: ContextTypes.DEFAULT_TYP
             "❌ Пожалуйста, перешлите сообщение именно из канала, а не из чата."
         )
         return
-    
+
     channel_id = forward_chat.id
     channel_title = forward_chat.title
     selected_chat_id = context.user_data.get('selected_chat_id')
-    
+
     # Check if bot is admin in the channel
     if not await is_bot_admin(channel_id, context):
         await message.reply_text(
@@ -205,10 +222,10 @@ async def handle_channel_setup(update: Update, context: ContextTypes.DEFAULT_TYP
             f"Добавьте меня как администратора и попробуйте снова."
         )
         return
-    
+
     # Save chat-channel binding to database
     success = await db.bind_chat_channel_async(selected_chat_id, channel_id, user.id)
-    
+
     if success:
         # Create keyboard with "main menu" button
         keyboard = [[InlineKeyboardButton("🏠 На главную", callback_data="main_menu")]]
@@ -228,7 +245,7 @@ async def handle_channel_setup(update: Update, context: ContextTypes.DEFAULT_TYP
             "❌ Произошла ошибка при сохранении настроек. Попробуйте позже."
         )
         logger.error(f"Failed to bind chat {selected_chat_id} to channel {channel_id} for user {user.id}")
-    
+
     # Clear user context
     context.user_data.clear()
 
@@ -909,23 +926,12 @@ async def add_moderator_forward_callback(update: Update, context: ContextTypes.D
     logger.info(f"User {user.id} started forward moderator addition for chat {chat_id}")
 
 
-async def handle_moderator_forward(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle forwarded message for moderator addition"""
-    from telegram.ext import ApplicationHandlerStop
-
+async def _handle_moderator_forward_internal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Internal function to handle forwarded message for moderator addition"""
     user = update.effective_user
     message = update.message
 
-    logger.info(f"handle_moderator_forward called for user {user.id}")
-
-    # Check if user is waiting for moderator forward
-    if not context.user_data.get('waiting_for_moderator_forward'):
-        logger.info(f"User {user.id} not waiting for moderator forward")
-        raise ApplicationHandlerStop()
-
-    # Don't interfere with channel setup mode
-    if context.user_data.get('waiting_for_channel'):
-        raise ApplicationHandlerStop()
+    logger.info(f"Processing moderator addition for user {user.id}")
 
     chat_id = context.user_data['waiting_for_moderator_forward']
 
@@ -939,11 +945,28 @@ async def handle_moderator_forward(update: Update, context: ContextTypes.DEFAULT
     # Check if message is forwarded and get user info
     moderator_user = None
 
-    # Try new format first (forward_origin.sender_user)
-    if hasattr(message, 'forward_origin') and message.forward_origin:
-        if hasattr(message.forward_origin, 'sender_user') and message.forward_origin.sender_user:
-            moderator_user = message.forward_origin.sender_user
-            logger.info(f"Using forward_origin.sender_user format for user {moderator_user.id}")
+    # Try new format first (forward_origin from api_kwargs)
+    if hasattr(message, 'api_kwargs') and 'forward_origin' in message.api_kwargs:
+        forward_origin = message.api_kwargs['forward_origin']
+        if isinstance(forward_origin, dict):
+            forward_type = forward_origin.get('type')
+            if forward_type == 'user':
+                sender_user_data = forward_origin.get('sender_user')
+                if sender_user_data:
+                    from telegram import User
+                    moderator_user = User.de_json(sender_user_data, context.bot)
+                    logger.info(f"Using api_kwargs forward_origin.sender_user format for user {moderator_user.id}")
+            elif forward_type == 'hidden_user':
+                # Handle hidden user case - cannot add as moderator due to privacy settings
+                logger.info(f"Forwarded message is from hidden user: {forward_origin.get('sender_user_name', 'unknown')}")
+                await message.reply_text(
+                    "❌ Невозможно добавить этого пользователя как модератора.\n\n"
+                    "У пользователя установлены настройки приватности, которые не позволяют "
+                    "видеть его профиль и идентификатор.\n\n"
+                    "Попробуйте ввести ID пользователя вручную или попросите пользователя "
+                    "изменить настройки приватности."
+                )
+                return
 
     # Fallback to old format (forward_from)
     if not moderator_user and hasattr(message, 'forward_from') and message.forward_from:
@@ -952,7 +975,7 @@ async def handle_moderator_forward(update: Update, context: ContextTypes.DEFAULT
 
     # If still no user info, error
     if not moderator_user:
-        logger.warning(f"No user info found in forwarded message. forward_origin: {getattr(message, 'forward_origin', None)}, forward_from: {getattr(message, 'forward_from', None)}")
+        logger.warning(f"No user info found in forwarded message. api_kwargs forward_origin: {message.api_kwargs.get('forward_origin') if hasattr(message, 'api_kwargs') else None}, forward_from: {getattr(message, 'forward_from', None)}")
         await message.reply_text(
             "❌ Не удалось получить информацию о пользователе из пересланного сообщения.\n\n"
             "Убедитесь, что пересылаете сообщение от пользователя (не от канала или бота).\n"

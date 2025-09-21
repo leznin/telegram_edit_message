@@ -8,7 +8,7 @@ import signal
 import asyncio
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update
-from telegram.ext import Application, ContextTypes
+from telegram.ext import Application, ContextTypes, filters
 import uvicorn
 import logging
 import json
@@ -20,7 +20,7 @@ from bot.handlers.commands import (
     start_command,
     chats_command,
     setup_chat_callback,
-    handle_channel_setup,
+    handle_forwarded_message,
     setup_channel_callback,
     toggle_delete_callback,
     back_to_chats_callback,
@@ -37,11 +37,25 @@ from bot.handlers.commands import (
     remove_moderator_callback,
     confirm_remove_moderator_callback,
     handle_moderator_id_input,
-    handle_moderator_forward,
     moderator_info_callback
 )
 from bot.handlers.messages import handle_edited_message, handle_new_chat_members
 from bot.handlers.status import handle_my_chat_member
+
+
+# Custom forwarded filter that handles both old and new formats
+class CustomForwardedFilter(filters.BaseFilter):
+    """Custom filter for forwarded messages (both old and new formats)"""
+    def filter(self, message):
+        # Check new format (forward_origin) from api_kwargs
+        if hasattr(message, 'api_kwargs') and 'forward_origin' in message.api_kwargs:
+            return True
+        # Check old format (forward_from or forward_from_chat)
+        if hasattr(message, 'forward_from') and message.forward_from:
+            return True
+        if hasattr(message, 'forward_from_chat') and message.forward_from_chat:
+            return True
+        return False
 
 # Setup logging
 setup_logging()
@@ -72,8 +86,7 @@ class TelegramBot:
         """Register all bot handlers"""
         from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
-        # Use built-in FORWARDED filter - it should support both old and new formats
-        forwarded_messages = filters.FORWARDED
+        forwarded_messages = CustomForwardedFilter()
         
         # Command handlers (private chats only)
         self.application.add_handler(
@@ -133,20 +146,12 @@ class TelegramBot:
             CallbackQueryHandler(moderator_info_callback, pattern="^moderator_info$")
         )
 
-        # Message handler for moderator forward (private chats, forwarded messages for moderator addition)
-        # IMPORTANT: This must be registered BEFORE other forwarded message handlers
+        # Unified handler for forwarded messages (private chats)
+        # Handles both channel setup and moderator addition
         self.application.add_handler(
             MessageHandler(
                 filters.ChatType.PRIVATE & forwarded_messages,
-                handle_moderator_forward
-            )
-        )
-
-        # Message handler for channel setup (private chats, forwarded messages)
-        self.application.add_handler(
-            MessageHandler(
-                filters.ChatType.PRIVATE & forwarded_messages,
-                handle_channel_setup
+                handle_forwarded_message
             )
         )
 
@@ -165,6 +170,7 @@ class TelegramBot:
                 handle_moderator_id_input
             )
         )
+
         
         # Обработчик для edited_message (webhook mode)
         # Создаем кастомный обработчик для edited_message в webhook режиме
@@ -229,8 +235,10 @@ class TelegramBot:
                 elif update.message:
                     logger.info(f"Received message update for chat {update.message.chat.id}")
                     # Log forwarded message details
-                    if hasattr(update.message, 'forward_origin') or hasattr(update.message, 'forward_from_chat'):
-                        logger.info(f"Forwarded message detected: forward_origin={hasattr(update.message, 'forward_origin')}, forward_from_chat={hasattr(update.message, 'forward_from_chat')}")
+                    if hasattr(update.message, 'api_kwargs') and 'forward_origin' in update.message.api_kwargs:
+                        logger.info(f"Forwarded message detected with forward_origin in api_kwargs")
+                    elif hasattr(update.message, 'forward_from_chat'):
+                        logger.info(f"Forwarded message detected with forward_from_chat")
                 
                 # Process update
                 await self.application.process_update(update)
