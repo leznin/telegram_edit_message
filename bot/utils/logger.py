@@ -9,9 +9,9 @@ from bot.utils.config import Config
 
 def setup_logging() -> None:
     """Setup logging configuration"""
-    
+
     # Create logs directory if it doesn't exist
-    log_dir = "logs"
+    log_dir = "/home/finalword/logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     
