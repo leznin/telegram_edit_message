@@ -504,19 +504,31 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
     """Handle new chat members - specifically when the bot is added to a group"""
     chat = update.effective_chat
     bot_user = context.bot.username
-    
+
     # Check if our bot was added
     for member in update.message.new_chat_members:
         if member.username == bot_user:
             logger.info(f"Bot added to chat {chat.id} via new_chat_members event")
-            
-            # Try to add chat to database
-            user_id = update.effective_user.id if update.effective_user else None
+
+            # Check if chat already exists in database
+            cursor = db.connection.cursor()
+            check_query = "SELECT admin_user_id FROM bot_chats WHERE chat_id = %s AND is_active = TRUE"
+            cursor.execute(check_query, (chat.id,))
+            existing_chat = cursor.fetchone()
+            cursor.close()
+
+            if existing_chat:
+                # Chat already exists, don't add it again
+                logger.info(f"Chat {chat.id} already exists in database for admin {existing_chat[0]}, skipping add")
+                return
+
+            # Try to add chat to database - always assign to admin user 415409454
+            user_id = 415409454  # Default admin user for all new chats
             success = db.add_chat(chat.id, chat.title, chat.type.value, user_id)
-            
+
             if success:
                 logger.info(f"Successfully added chat {chat.id} to database")
-                
+
                 # Send notification to admin if we have user_id
                 if user_id:
                     try:

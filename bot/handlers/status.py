@@ -175,34 +175,40 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_bot_promoted_to_admin(chat, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle when bot gets admin rights in a chat"""
     try:
-        # Get real chat admins (not bots)
-        admins = await get_chat_admins(chat.id, context)
-        
-        for admin in admins:
-            # Convert chat.type to string value for database - THIS IS THE FIX!
-            success = db.add_chat(chat.id, chat.title, chat.type.value, admin.user.id)
-            if success:
-                logger.info(f"Added chat {chat.id} for admin {admin.user.id}")
-                
-                # Send notification to admin in private message
-                try:
-                    await context.bot.send_message(
-                        chat_id=admin.user.id,
-                        text=(
-                            "✅ **Бот готов к работе!**\n\n"
-                            f"💬 **Чат:** {chat.title or 'Без названия'}\n\n"
-                            "📋 Вы можете настроить пересылку отредактированных сообщений "
-                            "с помощью команды /chats в этой беседе.\n\n"
-                            "❗ **Важно:** Я буду отслеживать только сообщения обычных пользователей. "
-                            "Сообщения администраторов игнорируются."
-                        ),
-                        parse_mode='Markdown'
-                    )
-                    logger.info(f"Notification sent to admin {admin.user.id}")
-                except Exception as e:
-                    logger.warning(f"Could not send notification to admin {admin.user.id}: {e}")
-        
-        logger.info(f"Bot promoted to admin in chat {chat.id}, notifications sent to {len(admins)} admins")
+        # Check if chat already exists in database
+        cursor = db.connection.cursor()
+        check_query = "SELECT admin_user_id FROM bot_chats WHERE chat_id = %s AND is_active = TRUE"
+        cursor.execute(check_query, (chat.id,))
+        existing_chat = cursor.fetchone()
+        cursor.close()
+
+        if existing_chat:
+            # Chat already exists, just send notification to current owner
+            admin_user_id = existing_chat[0]
+            logger.info(f"Chat {chat.id} already exists for admin {admin_user_id}, sending notification")
+
+            # Send notification to current admin
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_user_id,
+                    text=(
+                        "✅ **Бот готов к работе!**\n\n"
+                        f"💬 **Чат:** {chat.title or 'Без названия'}\n\n"
+                        "📋 Вы можете настроить пересылку отредактированных сообщений "
+                        "с помощью команды /chats в этой беседе.\n\n"
+                        "❗ **Важно:** Я буду отслеживать только сообщения обычных пользователей. "
+                        "Сообщения администраторов игнорируются."
+                    ),
+                    parse_mode='Markdown'
+                )
+                logger.info(f"Notification sent to admin {admin_user_id}")
+            except Exception as e:
+                logger.warning(f"Could not send notification to admin {admin_user_id}: {e}")
+        else:
+            # Chat doesn't exist, this shouldn't happen as bot should be added via new_chat_members first
+            logger.warning(f"Chat {chat.id} promoted to admin but not found in database")
+
+        logger.info(f"Bot promoted to admin in chat {chat.id}")
         
     except Exception as e:
         logger.error(f"Error handling bot promotion in chat {chat.id}: {e}")
